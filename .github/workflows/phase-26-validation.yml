@@ -1,0 +1,40 @@
+name: ALEX-MIND Phase 26 Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "auth.js"
+      - "worker.js"
+      - "migrations/**"
+      - "test/**"
+      - "wrangler.jsonc"
+      - "package.json"
+      - "docs/26-identity-core.md"
+  push:
+    branches:
+      - phase-26-identity-core
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
+      - name: Validate Worker
+        run: node --check worker.js && node --check auth.js
+      - name: Run Phase 26 tests
+        run: node --test test/auth.test.mjs
+      - name: Run full runtime regression
+        run: npm run test:runtime
