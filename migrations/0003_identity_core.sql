@@ -32,9 +32,7 @@ CREATE TABLE IF NOT EXISTS user_sessions (
   revoked_at TEXT,
   FOREIGN KEY(user_id) REFERENCES users(user_id)
 );
-
-CREATE INDEX IF NOT EXISTS idx_user_sessions_user
-  ON user_sessions(user_id, revoked_at, expires_at);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id,revoked_at,expires_at);
 
 CREATE TABLE IF NOT EXISTS email_verification_tokens (
   token_hash TEXT PRIMARY KEY,
@@ -44,9 +42,7 @@ CREATE TABLE IF NOT EXISTS email_verification_tokens (
   created_at TEXT NOT NULL,
   FOREIGN KEY(user_id) REFERENCES users(user_id)
 );
-
-CREATE INDEX IF NOT EXISTS idx_email_verification_user
-  ON email_verification_tokens(user_id, expires_at);
+CREATE INDEX IF NOT EXISTS idx_email_verification_user ON email_verification_tokens(user_id,expires_at);
 
 CREATE TABLE IF NOT EXISTS password_reset_tokens (
   token_hash TEXT PRIMARY KEY,
@@ -56,9 +52,7 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
   created_at TEXT NOT NULL,
   FOREIGN KEY(user_id) REFERENCES users(user_id)
 );
-
-CREATE INDEX IF NOT EXISTS idx_password_reset_user
-  ON password_reset_tokens(user_id, expires_at);
+CREATE INDEX IF NOT EXISTS idx_password_reset_user ON password_reset_tokens(user_id,expires_at);
 
 CREATE TABLE IF NOT EXISTS external_connections (
   connection_id TEXT PRIMARY KEY,
@@ -75,11 +69,9 @@ CREATE TABLE IF NOT EXISTS external_connections (
   last_sync_status TEXT,
   revoked_at TEXT,
   FOREIGN KEY(user_id) REFERENCES users(user_id),
-  UNIQUE(user_id, provider, provider_account_id)
+  UNIQUE(user_id,provider,provider_account_id)
 );
-
-CREATE INDEX IF NOT EXISTS idx_external_connections_user
-  ON external_connections(user_id, status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_external_connections_user ON external_connections(user_id,status,updated_at);
 
 CREATE TABLE IF NOT EXISTS external_credentials (
   connection_id TEXT PRIMARY KEY,
@@ -110,30 +102,17 @@ CREATE TABLE IF NOT EXISTS security_events (
   created_at TEXT NOT NULL,
   FOREIGN KEY(user_id) REFERENCES users(user_id)
 );
+CREATE INDEX IF NOT EXISTS idx_security_events_user ON security_events(user_id,created_at);
 
-CREATE INDEX IF NOT EXISTS idx_security_events_user
-  ON security_events(user_id, created_at);
-
-ALTER TABLE objects ADD COLUMN user_id TEXT;
-ALTER TABLE objects ADD COLUMN connection_id TEXT;
-CREATE INDEX IF NOT EXISTS idx_objects_user
-  ON objects(user_id, created_at);
-
-ALTER TABLE items ADD COLUMN user_id TEXT;
-ALTER TABLE items ADD COLUMN connection_id TEXT;
-CREATE INDEX IF NOT EXISTS idx_items_user
-  ON items(user_id, created_at);
-
-ALTER TABLE memories ADD COLUMN user_id TEXT;
-ALTER TABLE memories ADD COLUMN connection_id TEXT;
-CREATE INDEX IF NOT EXISTS idx_memories_user
-  ON memories(user_id, created_at);
-
-ALTER TABLE projects ADD COLUMN user_id TEXT;
-CREATE INDEX IF NOT EXISTS idx_projects_user
-  ON projects(user_id, created_at);
-
-ALTER TABLE inbox ADD COLUMN user_id TEXT;
-ALTER TABLE inbox ADD COLUMN connection_id TEXT;
-CREATE INDEX IF NOT EXISTS idx_inbox_user
-  ON inbox(user_id, received_at);
+CREATE TABLE IF NOT EXISTS user_resource_ownership (
+  user_id TEXT NOT NULL,
+  resource_type TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  connection_id TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(user_id,resource_type,resource_id),
+  FOREIGN KEY(user_id) REFERENCES users(user_id),
+  FOREIGN KEY(connection_id) REFERENCES external_connections(connection_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_resource_connection
+  ON user_resource_ownership(connection_id,resource_type,resource_id);
