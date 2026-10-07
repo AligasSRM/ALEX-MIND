@@ -46,11 +46,11 @@ test("ALEX-MIND Control UI is served", async () => {
 
 test("ALEX-MIND sync policy control action requires authorization", async () => {
   const url = "https://alex-mind.test/sync-policy";
-  const denied = await server.fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source_name: "Gmail A", vault_sync: false }) });
+  const denied = await server.fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source_name: "GitHub", vault_sync: false }) });
   assert.equal(denied.status, 403);
-  const wrongKey = await server.fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-alex-control-key": "wrong-key" }, body: JSON.stringify({ source_name: "Gmail A", vault_sync: false }) });
+  const wrongKey = await server.fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-alex-control-key": "wrong-key" }, body: JSON.stringify({ source_name: "GitHub", vault_sync: false }) });
   assert.equal(wrongKey.status, 403);
-  const allowed = await server.fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-alex-control-key": "test-control-key" }, body: JSON.stringify({ source_name: "Gmail A", vault_sync: false }) });
+  const allowed = await server.fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-alex-control-key": "test-control-key" }, body: JSON.stringify({ source_name: "GitHub", vault_sync: false }) });
   const raw = await allowed.text();
   let body;
   try { body = JSON.parse(raw); } catch { body = { raw }; }
