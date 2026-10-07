@@ -30,6 +30,13 @@ jobs:
       - name: Run runtime validation
         run: npm run test:runtime
 
+      - name: Apply D1 migrations
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: d1 migrations apply alex-central-db --remote
+
       - name: Deploy ALEX-MIND
         uses: cloudflare/wrangler-action@v4
         with:

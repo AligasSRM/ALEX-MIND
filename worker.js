@@ -281,6 +281,409 @@ async function storeObject(env, input) {
   };
 }
 
+
+function operationNow() {
+  return new Date().toISOString();
+}
+
+function controlOperationResponse(row, events = []) {
+  return {
+    operation_id: row.operation_id,
+    idempotency_key: row.idempotency_key,
+    action: row.action,
+    source_name: row.source_name,
+    target: row.target_type
+      ? { type: row.target_type, id: row.target_id }
+      : null,
+    authorization: row.authorization_state,
+    policy: row.policy_decision,
+    state: row.state,
+    attempt: row.attempt,
+    failure_category: row.failure_category,
+    recovery_state: row.recovery_state,
+    result: row.result_json ? JSON.parse(row.result_json) : null,
+    audit_ref: row.audit_ref,
+    requested_at: row.requested_at,
+    authorized_at: row.authorized_at,
+    started_at: row.started_at,
+    verified_at: row.verified_at,
+    completed_at: row.completed_at,
+    updated_at: row.updated_at,
+    events,
+  };
+}
+
+async function recordControlEvent(env, operationId, eventType, state, details = {}) {
+  await env.CENTRAL_DB.prepare(
+    "INSERT INTO control_operation_events " +
+    "(event_id,operation_id,event_type,state,details_json,created_at) VALUES (?,?,?,?,?,?)"
+  ).bind(
+    crypto.randomUUID(),
+    operationId,
+    eventType,
+    state,
+    JSON.stringify(details),
+    operationNow(),
+  ).run();
+}
+
+async function getControlOperation(env, operationId) {
+  const row = await env.CENTRAL_DB.prepare(
+    "SELECT * FROM control_operations WHERE operation_id=? LIMIT 1"
+  ).bind(operationId).first();
+  if (!row) return null;
+  const events = await env.CENTRAL_DB.prepare(
+    "SELECT event_id,event_type,state,details_json,created_at " +
+    "FROM control_operation_events WHERE operation_id=? ORDER BY created_at,event_id"
+  ).bind(operationId).all();
+  return controlOperationResponse(row, (events.results || []).map((event) => ({
+    event_id: event.event_id,
+    event_type: event.event_type,
+    state: event.state,
+    details: event.details_json ? JSON.parse(event.details_json) : {},
+    created_at: event.created_at,
+  })));
+}
+
+async function executeSyncPolicyAction(env, payload) {
+  const name = String(payload.source_name || "").trim();
+  if (!name) {
+    return { ok: false, status: "FAILED", http_status: 400, error: "source_name required" };
+  }
+
+  const vaultSync = payload.vault_sync === false ? 0 : 1;
+  const phoneSync = payload.phone_sync === true ? 1 : 0;
+  const result = await env.CENTRAL_DB.prepare(
+    "UPDATE sync_policies SET vault_sync=?,phone_sync=?,updated_at=CURRENT_TIMESTAMP " +
+    "WHERE source_id=(SELECT id FROM sources WHERE source_name=? LIMIT 1)"
+  ).bind(vaultSync, phoneSync, name).run();
+
+  if (!result.meta?.changes) {
+    return { ok: false, status: "FAILED", http_status: 404, error: "source not found" };
+  }
+
+  return {
+    ok: true,
+    status: "GREEN",
+    source_name: name,
+    vault_sync: vaultSync,
+    phone_sync: phoneSync,
+  };
+}
+
+async function createControlOperation(env, payload, request) {
+  const authorized = await controlActionAuthorized(request, env);
+  if (authorized === null) {
+    return { response: Response.json(
+      { ok: false, status: "FAILED", error: "control action authorization not configured" },
+      { status: 503 },
+    ) };
+  }
+  if (!authorized) {
+    return { response: Response.json(
+      { ok: false, status: "DENIED", error: "control action unauthorized" },
+      { status: 403 },
+    ) };
+  }
+
+  const action = String(payload.action || "").trim();
+  const idempotencyKey = String(
+    payload.idempotency_key || request.headers.get("idempotency-key") || ""
+  ).trim();
+  if (!action || !idempotencyKey) {
+    return { response: Response.json(
+      { ok: false, status: "FAILED", error: "action and idempotency_key required" },
+      { status: 400 },
+    ) };
+  }
+  if (idempotencyKey.length > 200) {
+    return { response: Response.json(
+      { ok: false, status: "FAILED", error: "idempotency_key too long" },
+      { status: 400 },
+    ) };
+  }
+
+  const sourceName = String(payload.source_name || "").trim() || null;
+  const requestHash = await sha256Hex(JSON.stringify({
+    action,
+    source_name: sourceName,
+    vault_sync: payload.vault_sync === false ? false : true,
+    phone_sync: payload.phone_sync === true ? true : false,
+  }));
+
+  const existing = await env.CENTRAL_DB.prepare(
+    "SELECT * FROM control_operations WHERE idempotency_key=? LIMIT 1"
+  ).bind(idempotencyKey).first();
+  if (existing) {
+    if (existing.request_hash !== requestHash) {
+      return { response: Response.json(
+        { ok: false, status: "CONFLICT", error: "idempotency key reused for different request" },
+        { status: 409 },
+      ) };
+    }
+    const existingFull = await getControlOperation(env, existing.operation_id);
+    return {
+      response: Response.json(
+        { ok: true, status: existing.state === "completed" ? "GREEN" : "IN_PROGRESS", replay: true, operation: existingFull },
+        { status: existing.state === "completed" ? 200 : 202 },
+      ),
+    };
+  }
+
+  const operationId = "op-" + crypto.randomUUID();
+  const auditRef = "audit-" + operationId;
+  const now = operationNow();
+  const supported = action === "sync_policy";
+  const source = sourceName
+    ? await env.CENTRAL_DB.prepare(
+        "SELECT id,source_name,status FROM sources WHERE source_name=? LIMIT 1"
+      ).bind(sourceName).first()
+    : null;
+
+  let policyDecision = "allow";
+  let initialState = "requested";
+  let authorizationState = "authorized";
+  let failureCategory = null;
+  let recoveryState = null;
+
+  if (!supported) {
+    policyDecision = "blocked";
+    initialState = "blocked";
+    authorizationState = "authorized";
+    failureCategory = "unsupported_action";
+  } else if (!source || source.status !== "active") {
+    policyDecision = "blocked";
+    initialState = "blocked";
+    failureCategory = "target_not_found";
+  } else {
+    // sync_policy manages the policy itself; its resulting value is not a
+    // prerequisite for changing that same policy. Authorization + target
+    // resolution remain mandatory gates.
+    policyDecision = "allow";
+  }
+
+  await env.CENTRAL_DB.batch([
+    env.CENTRAL_DB.prepare(
+      "INSERT INTO control_operations " +
+      "(operation_id,idempotency_key,request_hash,action,source_name,target_type,target_id," +
+      "authorization_state,policy_decision,state,attempt,failure_category,recovery_state," +
+      "result_json,audit_ref,requested_at,created_at,updated_at) " +
+      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    ).bind(
+      operationId,
+      idempotencyKey,
+      requestHash,
+      action,
+      sourceName,
+      sourceName ? "source" : null,
+      sourceName,
+      authorizationState,
+      policyDecision,
+      initialState,
+      0,
+      failureCategory,
+      recoveryState,
+      null,
+      auditRef,
+      now,
+      now,
+      now,
+    ),
+    env.CENTRAL_DB.prepare(
+      "INSERT INTO control_operation_events " +
+      "(event_id,operation_id,event_type,state,details_json,created_at) VALUES (?,?,?,?,?,?)"
+    ).bind(
+      crypto.randomUUID(),
+      operationId,
+      "requested",
+      initialState,
+      JSON.stringify({ action, source_name: sourceName, policy_decision: policyDecision }),
+      now,
+    ),
+  ]);
+
+  if (initialState === "blocked") {
+    const blocked = await getControlOperation(env, operationId);
+    return {
+      response: Response.json(
+        { ok: false, status: "BLOCKED", operation: blocked },
+        { status: 409 },
+      ),
+    };
+  }
+
+  await env.CENTRAL_DB.batch([
+    env.CENTRAL_DB.prepare(
+      "UPDATE control_operations SET state='authorized',authorized_at=?,updated_at=? WHERE operation_id=?"
+    ).bind(now, now, operationId),
+    env.CENTRAL_DB.prepare(
+      "INSERT INTO control_operation_events " +
+      "(event_id,operation_id,event_type,state,details_json,created_at) VALUES (?,?,?,?,?,?)"
+    ).bind(
+      crypto.randomUUID(),
+      operationId,
+      "authorized",
+      "authorized",
+      JSON.stringify({ policy_decision: policyDecision }),
+      now,
+    ),
+  ]);
+
+  await env.CENTRAL_DB.batch([
+    env.CENTRAL_DB.prepare(
+      "UPDATE control_operations SET state='running',attempt=attempt+1,started_at=?,updated_at=? WHERE operation_id=?"
+    ).bind(operationNow(), operationNow(), operationId),
+    env.CENTRAL_DB.prepare(
+      "INSERT INTO control_operation_events " +
+      "(event_id,operation_id,event_type,state,details_json,created_at) VALUES (?,?,?,?,?,?)"
+    ).bind(
+      crypto.randomUUID(),
+      operationId,
+      "started",
+      "running",
+      JSON.stringify({ attempt: 1 }),
+      operationNow(),
+    ),
+  ]);
+
+  let result;
+  try {
+    if (action === "sync_policy") {
+      result = await executeSyncPolicyAction(env, payload);
+    } else {
+      throw new Error("unsupported action");
+    }
+
+    if (!result.ok) {
+      const failedAt = operationNow();
+      await env.CENTRAL_DB.batch([
+        env.CENTRAL_DB.prepare(
+          "UPDATE control_operations SET state='failed',failure_category=?,result_json=?,completed_at=?,updated_at=? WHERE operation_id=?"
+        ).bind("execution", JSON.stringify(result), failedAt, failedAt, operationId),
+        env.CENTRAL_DB.prepare(
+          "INSERT INTO control_operation_events " +
+          "(event_id,operation_id,event_type,state,details_json,created_at) VALUES (?,?,?,?,?,?)"
+        ).bind(
+          crypto.randomUUID(),
+          operationId,
+          "failed",
+          "failed",
+          JSON.stringify({ category: "execution", error: result.error }),
+          failedAt,
+        ),
+      ]);
+      const failed = await getControlOperation(env, operationId);
+      return { response: Response.json(
+        { ok: false, status: "FAILED", operation: failed },
+        { status: result.http_status || 500 },
+      ) };
+    }
+
+    const verifyAt = operationNow();
+    await env.CENTRAL_DB.batch([
+      env.CENTRAL_DB.prepare(
+        "UPDATE control_operations SET state='verifying',verified_at=?,result_json=?,updated_at=? WHERE operation_id=?"
+      ).bind(verifyAt, JSON.stringify(result), verifyAt, operationId),
+      env.CENTRAL_DB.prepare(
+        "INSERT INTO control_operation_events " +
+        "(event_id,operation_id,event_type,state,details_json,created_at) VALUES (?,?,?,?,?,?)"
+      ).bind(
+        crypto.randomUUID(),
+        operationId,
+        "verified",
+        "verifying",
+        JSON.stringify({ verification: "provider_result_confirmed" }),
+        verifyAt,
+      ),
+    ]);
+
+    const completedAt = operationNow();
+    await env.CENTRAL_DB.batch([
+      env.CENTRAL_DB.prepare(
+        "UPDATE control_operations SET state='completed',completed_at=?,updated_at=? WHERE operation_id=?"
+      ).bind(completedAt, completedAt, operationId),
+      env.CENTRAL_DB.prepare(
+        "INSERT INTO control_operation_events " +
+        "(event_id,operation_id,event_type,state,details_json,created_at) VALUES (?,?,?,?,?,?)"
+      ).bind(
+        crypto.randomUUID(),
+        operationId,
+        "completed",
+        "completed",
+        JSON.stringify({ verified: true }),
+        completedAt,
+      ),
+    ]);
+
+    const completed = await getControlOperation(env, operationId);
+    return {
+      response: Response.json(
+        { ok: true, status: "GREEN", operation: completed, result },
+        { status: 200 },
+      ),
+    };
+  } catch (error) {
+    const failedAt = operationNow();
+    await env.CENTRAL_DB.batch([
+      env.CENTRAL_DB.prepare(
+        "UPDATE control_operations SET state='failed',failure_category=?,result_json=?,completed_at=?,updated_at=? WHERE operation_id=?"
+      ).bind("execution_exception", JSON.stringify({ error: errorText(error) }), failedAt, failedAt, operationId),
+      env.CENTRAL_DB.prepare(
+        "INSERT INTO control_operation_events " +
+        "(event_id,operation_id,event_type,state,details_json,created_at) VALUES (?,?,?,?,?,?)"
+      ).bind(
+        crypto.randomUUID(),
+        operationId,
+        "failed",
+        "failed",
+        JSON.stringify({ category: "execution_exception" }),
+        failedAt,
+      ),
+    ]);
+    const failed = await getControlOperation(env, operationId);
+    return {
+      response: Response.json(
+        { ok: false, status: "FAILED", operation: failed },
+        { status: 500 },
+      ),
+    };
+  }
+}
+
+async function reconcileControlOperation(env, operationId, request) {
+  const authorized = await controlActionAuthorized(request, env);
+  if (authorized === null) {
+    return Response.json(
+      { ok: false, status: "FAILED", error: "control action authorization not configured" },
+      { status: 503 },
+    );
+  }
+  if (!authorized) {
+    return Response.json(
+      { ok: false, status: "DENIED", error: "control action unauthorized" },
+      { status: 403 },
+    );
+  }
+
+  const row = await env.CENTRAL_DB.prepare(
+    "SELECT * FROM control_operations WHERE operation_id=? LIMIT 1"
+  ).bind(operationId).first();
+  if (!row) {
+    return Response.json({ ok: false, status: "FAILED", error: "operation not found" }, { status: 404 });
+  }
+  if (row.state !== "reconciliation_required" && row.recovery_state !== "reconciliation_required") {
+    return Response.json(
+      { ok: false, status: "BLOCKED", error: "operation does not require reconciliation", operation: await getControlOperation(env, operationId) },
+      { status: 409 },
+    );
+  }
+
+  return Response.json(
+    { ok: false, status: "BLOCKED", error: "no safe reconciliation handler registered for action", operation: await getControlOperation(env, operationId) },
+    { status: 409 },
+  );
+}
+
 async function controlStatusResponse(env) {
   const checks = {
     d1: false,
@@ -405,43 +808,43 @@ export default {
           : Response.json({ ok: false, error: "source not found" }, { status: 404 });
       }
 
-      if (url.pathname === "/sync-policy" && request.method === "POST") {
-        const authorized = await controlActionAuthorized(request, env);
-        if (authorized === null) {
-          return Response.json(
-            { ok: false, status: "FAILED", error: "control action authorization not configured" },
-            { status: 503 },
-          );
-        }
-        if (!authorized) {
-          return Response.json(
-            { ok: false, status: "DENIED", error: "control action unauthorized" },
-            { status: 403 },
-          );
-        }
-
+      if (url.pathname === "/control/operations" && request.method === "POST") {
         const payload = await request.json();
-        const name = String(payload.source_name || "").trim();
-        if (!name) {
-          return Response.json({ ok: false, error: "source_name required" }, { status: 400 });
+        return (await createControlOperation(env, payload, request)).response;
+      }
+
+      if (url.pathname === "/control/operations" && request.method === "GET") {
+        const operationId = url.searchParams.get("operation_id");
+        if (operationId) {
+          const operation = await getControlOperation(env, operationId);
+          return operation
+            ? Response.json({ ok: true, operation })
+            : Response.json({ ok: false, error: "operation not found" }, { status: 404 });
         }
         const result = await env.CENTRAL_DB.prepare(
-          "UPDATE sync_policies SET vault_sync=?,phone_sync=?,updated_at=CURRENT_TIMESTAMP " +
-          "WHERE source_id=(SELECT id FROM sources WHERE source_name=? LIMIT 1)",
-        ).bind(
-          payload.vault_sync === false ? 0 : 1,
-          payload.phone_sync === true ? 1 : 0,
-          name,
-        ).run();
+          "SELECT operation_id,idempotency_key,action,source_name,target_type,target_id," +
+          "authorization_state,policy_decision,state,attempt,failure_category,recovery_state," +
+          "requested_at,completed_at,updated_at FROM control_operations ORDER BY updated_at DESC LIMIT 50"
+        ).all();
+        return Response.json({ ok: true, operations: result.results || [] });
+      }
 
-        return result.meta?.changes
-          ? Response.json({
-              ok: true,
-              source_name: name,
-              vault_sync: payload.vault_sync === false ? 0 : 1,
-              phone_sync: payload.phone_sync === true ? 1 : 0,
-            })
-          : Response.json({ ok: false, error: "source not found" }, { status: 404 });
+      const reconcileMatch = url.pathname.match(/^\/control\/operations\/([^/]+)\/reconcile$/);
+      if (reconcileMatch && request.method === "POST") {
+        return reconcileControlOperation(env, decodeURIComponent(reconcileMatch[1]), request);
+      }
+
+      if (url.pathname === "/sync-policy" && request.method === "POST") {
+        const payload = await request.json();
+        const idempotencyKey =
+          request.headers.get("idempotency-key") ||
+          "legacy-sync-policy-" + crypto.randomUUID();
+        const operation = await createControlOperation(
+          env,
+          { ...payload, action: "sync_policy", idempotency_key: idempotencyKey },
+          request,
+        );
+        return operation.response;
       }
 
       if (url.pathname === "/debug/objects-schema" && request.method === "GET") {
