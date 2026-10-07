@@ -273,6 +273,56 @@ async function storeObject(env, input) {
   };
 }
 
+async function controlStatusResponse(env) {
+  const checks = {
+    d1: false,
+    kv: false,
+    b2: false,
+  };
+
+  try {
+    await env.CENTRAL_DB.prepare("SELECT 1 AS ok").first();
+    checks.d1 = true;
+  } catch (_) {}
+
+  try {
+    await env.CENTRAL_KV.get("control/ping");
+    checks.kv = true;
+  } catch (_) {}
+
+  checks.b2 = !!(env.B2_KEY_ID && env.B2_APP_KEY);
+
+  const sources = await env.CENTRAL_DB.prepare(
+    "SELECT s.source_name,s.source_type,s.status,p.vault_sync,p.phone_sync " +
+    "FROM sources s JOIN sync_policies p ON p.source_id=s.id ORDER BY s.id"
+  ).all();
+
+  const body = {
+    system: "ALEX-MIND",
+    control_plane: "ONLINE",
+    status: checks.d1 && checks.kv && checks.b2 ? "GREEN" : "FAILED",
+    checks,
+    core: {
+      database: checks.d1,
+      state: checks.kv,
+      storage: checks.b2,
+    },
+    sources: sources.results || [],
+    read_only: true,
+    checked_at: new Date().toISOString(),
+  };
+
+  await env.CENTRAL_KV.put(
+    "control/last",
+    JSON.stringify({
+      status: body.status,
+      checked_at: body.checked_at,
+    }),
+  );
+
+  return Response.json(body);
+}
+
 export default {
   async scheduled(_controller, env) {
     try {
@@ -288,61 +338,11 @@ export default {
 
     try {
       if (url.pathname === "/control/status" && request.method === "GET") {
-        const checks = {
-          d1: false,
-          kv: false,
-          b2: false,
-        };
-
-        try {
-          await env.CENTRAL_DB.prepare("SELECT 1 AS ok").first();
-          checks.d1 = true;
-        } catch (_) {}
-
-        try {
-          await env.CENTRAL_KV.get("control/ping");
-          checks.kv = true;
-        } catch (_) {}
-
-        checks.b2 = !!(env.B2_KEY_ID && env.B2_APP_KEY);
-
-        const sources = await env.CENTRAL_DB.prepare(
-          "SELECT s.source_name,s.source_type,s.status,p.vault_sync,p.phone_sync " +
-          "FROM sources s JOIN sync_policies p ON p.source_id=s.id ORDER BY s.id"
-        ).all();
-
-        const body = {
-          system: "ALEX-MIND",
-          control_plane: "ONLINE",
-          status: checks.d1 && checks.kv && checks.b2 ? "GREEN" : "FAILED",
-          checks,
-          core: {
-            database: checks.d1,
-            state: checks.kv,
-            storage: checks.b2,
-          },
-          sources: sources.results || [],
-          read_only: true,
-          checked_at: new Date().toISOString(),
-        };
-
-        await env.CENTRAL_KV.put(
-          "control/last",
-          JSON.stringify({
-            status: body.status,
-            checked_at: body.checked_at,
-          }),
-        );
-
-        return Response.json(body);
+        return controlStatusResponse(env);
       }
 
       if (url.pathname === "/control/check" && request.method === "GET") {
-        const response = await fetch(new URL("/control/status", request.url), {
-          method: "GET",
-          headers: request.headers,
-        });
-        return new Response(response.body, response);
+        return controlStatusResponse(env);
       }
 
       if (url.pathname === "/health") {
