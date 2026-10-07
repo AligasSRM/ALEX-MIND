@@ -1,0 +1,23 @@
+{
+  "name": "alex-mind",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-05",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "CENTRAL_DB",
+      "database_name": "alex-central-db",
+      "database_id": "96a55d83-5225-41da-a862-61fc22d3bd03",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "CENTRAL_KV",
+      "id": "cf28837ada8a410f95ef16d863f5ea74"
+    }
+  ],
+  "vars": {
+    "B2_KEY_ID": "test-key-id"
+  }
+}
