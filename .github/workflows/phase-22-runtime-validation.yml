@@ -1,6 +1,9 @@
 name: Phase 22 runtime validation
 
 on:
+  push:
+    branches:
+      - phase-22-control-integration
   pull_request:
     branches:
       - main
@@ -9,6 +12,7 @@ on:
       - synchronize
       - reopened
       - ready_for_review
+      - synchronize
   workflow_dispatch:
     inputs:
       ref:
