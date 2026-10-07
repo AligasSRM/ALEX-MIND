@@ -1,0 +1,89 @@
+name: Phase 22 runtime validation
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  runtime-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: phase-22-control-integration
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate worker syntax
+        run: node --check worker.js
+      - name: Execute control routes with isolated runtime mocks
+        run: |
+          cat > runtime-test.mjs <<'EOF'
+          import worker from './worker.js';
+
+          const calls = [];
+          const env = {
+            B2_KEY_ID: 'test-key-id',
+            B2_APP_KEY: 'test-app-key',
+            CENTRAL_DB: {
+              prepare(sql) {
+                return {
+                  bind(...args) {
+                    return {
+                      async first() {
+                        calls.push(['first', sql, args]);
+                        if (sql.includes('SELECT 1 AS ok')) return { ok: 1 };
+                        if (sql.includes('FROM sources s JOIN sync_policies')) return null;
+                        return null;
+                      },
+                      async all() {
+                        calls.push(['all', sql, args]);
+                        if (sql.includes('FROM sources s JOIN sync_policies')) {
+                          return { results: [{ source_name: 'GitHub', source_type: 'github', status: 'active', vault_sync: 1, phone_sync: 0 }] };
+                        }
+                        return { results: [] };
+                      },
+                      async run() {
+                        calls.push(['run', sql, args]);
+                        return { meta: { changes: 1 } };
+                      }
+                    };
+                  },
+                  async first() {
+                    calls.push(['first', sql, []]);
+                    if (sql.includes('SELECT 1 AS ok')) return { ok: 1 };
+                    return null;
+                  },
+                  async all() {
+                    calls.push(['all', sql, []]);
+                    if (sql.includes('FROM sources s JOIN sync_policies')) {
+                      return { results: [{ source_name: 'GitHub', source_type: 'github', status: 'active', vault_sync: 1, phone_sync: 0 }] };
+                    }
+                    return { results: [] };
+                  }
+                };
+              }
+            },
+            CENTRAL_KV: {
+              async get(key) { calls.push(['kv.get', key]); return null; },
+              async put(key, value) { calls.push(['kv.put', key, value]); }
+            }
+          };
+
+          for (const path of ['/control/status', '/control/check']) {
+            const response = await worker.fetch(new Request('https://test.local' + path), env);
+            const body = await response.json();
+            if (response.status !== 200) throw new Error(path + ' HTTP ' + response.status);
+            if (body.status !== 'GREEN') throw new Error(path + ' not GREEN: ' + JSON.stringify(body));
+            if (!body.read_only) throw new Error(path + ' is not read-only');
+            if (!body.checks.d1 || !body.checks.kv || !body.checks.b2) {
+              throw new Error(path + ' checks incomplete: ' + JSON.stringify(body.checks));
+            }
+          }
+
+          console.log('PHASE_22_RUNTIME_VALIDATION: GREEN');
+          console.log(JSON.stringify({ calls: calls.length }));
+          EOF
+          node runtime-test.mjs
