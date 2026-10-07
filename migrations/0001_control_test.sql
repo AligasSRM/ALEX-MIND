@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS sources (
 CREATE TABLE IF NOT EXISTS sync_policies (
   source_id INTEGER PRIMARY KEY,
   vault_sync INTEGER NOT NULL DEFAULT 0,
-  phone_sync INTEGER NOT NULL DEFAULT 0
+  phone_sync INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 INSERT OR REPLACE INTO sources (id, source_name, source_type, status)
 VALUES (1, 'GitHub', 'github', 'active');
