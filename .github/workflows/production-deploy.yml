@@ -30,13 +30,8 @@ jobs:
       - name: Run runtime validation
         run: npm run test:runtime
 
-      - name: Apply D1 migrations
-        uses: cloudflare/wrangler-action@v4
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: d1 migrations apply alex-central-db --remote
-
+      # D1 production migration 0002 is applied through the authorized Cloudflare control plane.
+      # The GitHub deploy token is intentionally scoped without D1 write permission.
       - name: Deploy ALEX-MIND
         uses: cloudflare/wrangler-action@v4
         with:
