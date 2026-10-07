@@ -1,0 +1,43 @@
+name: ALEX-MIND Phase 25 Validation
+
+on:
+  push:
+    branches:
+      - phase-25-control-orchestrator
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "worker.js"
+      - "test/**"
+      - "wrangler.jsonc"
+      - "package.json"
+      - "migrations/**"
+      - "public/**"
+      - "docs/25-control-orchestrator.md"
+      - ".github/workflows/phase-25-validation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Validate Worker
+        run: node --check worker.js
+
+      - name: Run runtime validation
+        run: npm run test:runtime
