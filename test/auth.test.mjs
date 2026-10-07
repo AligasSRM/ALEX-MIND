@@ -46,6 +46,7 @@ test("Phase 26 password hashing is salted and verifiable", async () => {
 
 test("Phase 26 unauthenticated /me is denied", async () => {
   const response = await server.fetch("https://alex-mind.test/api/auth/me");
+  if (response.status === 500) server.debug();
   assert.equal(response.status, 401);
 });
 
