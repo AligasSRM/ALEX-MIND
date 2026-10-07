@@ -1,0 +1,11 @@
+{
+  "name": "alex-mind-runtime-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:runtime": "node --test test/runtime.test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
