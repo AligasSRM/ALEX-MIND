@@ -13,7 +13,14 @@ const server = createTestHarness({
 
 before(async () => {
   await server.listen();
-  await server.getWorker().applyD1Migrations("CENTRAL_DB");
+  const worker = server.getWorker();
+  await worker.applyD1Migrations("CENTRAL_DB");
+  const env = await worker.getEnv();
+  await env.CENTRAL_DB.batch([
+    env.CENTRAL_DB.prepare("ALTER TABLE sync_policies ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"),
+    env.CENTRAL_DB.prepare("ALTER TABLE sync_policies ADD COLUMN last_sync_at TEXT"),
+    env.CENTRAL_DB.prepare("ALTER TABLE sync_policies ADD COLUMN last_sync_status TEXT"),
+  ]);
 });
 
 after(async () => { await server.close(); });
