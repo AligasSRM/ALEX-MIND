@@ -41,6 +41,25 @@ async function objectSchema(env){
   const q=await env.CENTRAL_DB.prepare("PRAGMA table_info(objects)").all();
   return q.results||[];
 }
+async function groomObjects(env,{dryRun=false}={}){
+  if(!env.CENTRAL_DB)throw new Error("D1 binding missing");
+  if(!env.CENTRAL_KV)throw new Error("KV binding missing");
+  const cutoff=new Date(Date.now()-90*24*60*60*1000).toISOString();
+  const q=await env.CENTRAL_DB.prepare("SELECT object_id,source_id,vault_id,storage_key,status,updated_at FROM objects WHERE status='stored' AND archived_at IS NULL AND updated_at < ? ORDER BY updated_at ASC LIMIT 100").bind(cutoff).all();
+  const candidates=q.results||[];
+  if(dryRun){
+    return {ok:true,status:"GREEN",dry_run:true,retention_days:90,bounded_to:100,candidate_count:candidates.length,candidates};
+  }
+  if(candidates.length){
+    const ids=candidates.map(x=>x.object_id);
+    const placeholders=ids.map(()=>"?").join(",");
+    await env.CENTRAL_DB.prepare("UPDATE objects SET status='archived', archived_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE object_id IN ("+placeholders+") AND status='stored' AND archived_at IS NULL").bind(...ids).run();
+  }
+  const result={ok:true,status:"GREEN",dry_run:false,retention_days:90,bounded_to:100,archived_count:candidates.length,storage_bytes_deleted:0,storage_delete_performed:false,ran_at:new Date().toISOString()};
+  await env.CENTRAL_KV.put("groom/last",JSON.stringify(result));
+  return result;
+}
+
 async function storeObject(env,p){
   const source=await env.CENTRAL_DB.prepare("SELECT id FROM sources WHERE source_name=? AND status='active' LIMIT 1").bind(p.sourceName).first();
   if(!source)throw new Error("source not registered");
@@ -69,7 +88,14 @@ async function storeObject(env,p){
 }
 
 export default {
-  async scheduled(_controller,env){try{await env.CENTRAL_DB.prepare("SELECT 1").first();}catch(e){console.error("SCHEDULED_ERROR",e);}},
+  async scheduled(_controller,env){
+    try{
+      const result=await groomObjects(env,{dryRun:false});
+      console.log("SCHEDULED_GROOM",JSON.stringify(result));
+    }catch(e){
+      console.error("SCHEDULED_GROOM_ERROR",e);
+    }
+  },
   async fetch(request,env){
     const url=new URL(request.url);
     try{
@@ -95,6 +121,10 @@ export default {
       if(url.pathname==="/debug/objects-schema"&&request.method==="GET")return Response.json({ok:true,columns:await objectSchema(env)});
       if(url.pathname==="/objects/test"&&request.method==="GET"){
         return Response.json(await storeObject(env,{sourceName:"GitHub",vaultId:"alex-central-vault",objectId:"runtime-"+crypto.randomUUID(),name:"ALEX-MIND runtime object test",kind:"test",contentType:"text/plain",body:"ALEX MIND runtime object test"}));
+      }
+      if(url.pathname==="/objects/groom"&&request.method==="POST"){
+        const dryRun=url.searchParams.get("dry_run")==="true";
+        return Response.json(await groomObjects(env,{dryRun}));
       }
       if(url.pathname==="/objects"&&request.method==="POST"){
         const p={sourceName:String(request.headers.get("x-source-name")||"").trim(),vaultId:String(request.headers.get("x-vault-id")||"").trim(),objectId:String(request.headers.get("x-object-id")||crypto.randomUUID()).trim(),name:request.headers.get("x-object-name"),kind:request.headers.get("x-object-kind")||"file",externalId:request.headers.get("x-external-id"),projectSlug:request.headers.get("x-project-slug"),contentType:request.headers.get("content-type")||"application/octet-stream",body:await request.arrayBuffer()};
