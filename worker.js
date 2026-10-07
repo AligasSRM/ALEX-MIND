@@ -65,7 +65,7 @@ async function storeObject(env,p){
   if(!source)throw new Error("source not registered");
   const policy=await env.CENTRAL_DB.prepare("SELECT vault_sync FROM sync_policies WHERE source_id=?").bind(source.id).first();
   if(!policy?.vault_sync)throw new Error("vault sync disabled");
-  const body=new Uint8Array(p.body);
+  const body=p.body instanceof ArrayBuffer?new Uint8Array(p.body):typeof p.body==="string"?new TextEncoder().encode(p.body):p.body instanceof Uint8Array?p.body:new Uint8Array(p.body);
   const checksum=await sha256Hex(body);
   const key="objects/"+p.sourceName.replace(/[^a-zA-Z0-9_-]/g,"_")+"/"+p.objectId;
   const contentType=p.contentType||"application/octet-stream";
