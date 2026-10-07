@@ -2,7 +2,7 @@ import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createTestHarness } from "wrangler";
 
-const server = createTestHarness({
+// Phase 22 integration harness: execute the Worker locally with its configured bindings.\nconst server = createTestHarness({
   workers: [{ configPath: "./wrangler.jsonc", secrets: { B2_APP_KEY: "test-app-key" } }]
 });
 
