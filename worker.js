@@ -468,7 +468,7 @@ async function createControlOperation(env, payload, request) {
       "(operation_id,idempotency_key,request_hash,action,source_name,target_type,target_id," +
       "authorization_state,policy_decision,state,attempt,failure_category,recovery_state," +
       "result_json,audit_ref,requested_at,created_at,updated_at) " +
-      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
     ).bind(
       operationId,
       idempotencyKey,
