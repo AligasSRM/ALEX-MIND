@@ -456,14 +456,10 @@ async function createControlOperation(env, payload, request) {
     initialState = "blocked";
     failureCategory = "target_not_found";
   } else {
-    const policy = await env.CENTRAL_DB.prepare(
-      "SELECT vault_sync FROM sync_policies WHERE source_id=? LIMIT 1"
-    ).bind(source.id).first();
-    if (!policy?.vault_sync && payload.vault_sync !== false) {
-      policyDecision = "blocked";
-      initialState = "blocked";
-      failureCategory = "policy_block";
-    }
+    // sync_policy manages the policy itself; its resulting value is not a
+    // prerequisite for changing that same policy. Authorization + target
+    // resolution remain mandatory gates.
+    policyDecision = "allow";
   }
 
   await env.CENTRAL_DB.batch([
