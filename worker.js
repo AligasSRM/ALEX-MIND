@@ -398,6 +398,20 @@ export default {
       }
 
       if (url.pathname === "/sync-policy" && request.method === "POST") {
+        const authorized = await controlActionAuthorized(request, env);
+        if (authorized === null) {
+          return Response.json(
+            { ok: false, status: "FAILED", error: "control action authorization not configured" },
+            { status: 503 },
+          );
+        }
+        if (!authorized) {
+          return Response.json(
+            { ok: false, status: "DENIED", error: "control action unauthorized" },
+            { status: 403 },
+          );
+        }
+
         const payload = await request.json();
         const name = String(payload.source_name || "").trim();
         if (!name) {
