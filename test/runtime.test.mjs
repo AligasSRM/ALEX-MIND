@@ -33,3 +33,12 @@ for (const path of ["/control/status", "/control/check"]) {
     assert.equal(body.read_only, true, "Response body: " + raw);
   });
 }
+
+
+test("ALEX-MIND Control UI is served", async () => {
+  const response = await server.fetch("https://alex-mind.test/");
+  const raw = await response.text();
+  assert.equal(response.status, 200, "UI response: " + raw);
+  assert.match(raw, /ALEX-MIND Control/);
+  assert.match(raw, /\/control\/status/);
+});
