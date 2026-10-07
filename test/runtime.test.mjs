@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createTestHarness } from "wrangler";
 
 const server = createTestHarness({
-  workers: [{ config: "./worker.js", name: "alex-mind" }]
+  workers: [{ configPath: "./wrangler.jsonc" }]
 });
 
 before(async () => { await server.listen(); });
