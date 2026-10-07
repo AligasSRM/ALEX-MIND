@@ -17,9 +17,15 @@ after(async () => { await server.close(); });
 for (const path of ["/control/status", "/control/check"]) {
   test("ALEX-MIND " + path + " is GREEN", async () => {
     const response = await server.fetch("https://alex-mind.test" + path);
-    const body = await response.json();
-    assert.equal(response.status, 200);
-    assert.equal(body.status, "GREEN");
-    assert.equal(body.read_only, true);
+    const raw = await response.text();
+    let body;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      body = { status: "NON_JSON", raw };
+    }
+    assert.equal(response.status, 200, "HTTP body: " + raw);
+    assert.equal(body.status, "GREEN", "Response body: " + raw);
+    assert.equal(body.read_only, true, "Response body: " + raw);
   });
 }
