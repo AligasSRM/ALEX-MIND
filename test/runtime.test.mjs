@@ -51,8 +51,10 @@ test("ALEX-MIND sync policy control action requires authorization", async () => 
   const wrongKey = await server.fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-alex-control-key": "wrong-key" }, body: JSON.stringify({ source_name: "Gmail A", vault_sync: false }) });
   assert.equal(wrongKey.status, 403);
   const allowed = await server.fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-alex-control-key": "test-control-key" }, body: JSON.stringify({ source_name: "Gmail A", vault_sync: false }) });
-  const body = await allowed.json();
-  assert.equal(allowed.status, 200);
-  assert.equal(body.ok, true);
+  const raw = await allowed.text();
+  let body;
+  try { body = JSON.parse(raw); } catch { body = { raw }; }
+  assert.equal(allowed.status, 200, "Allowed response: " + raw);
+  assert.equal(body.ok, true, "Allowed response: " + raw);
   assert.equal(body.vault_sync, 0);
 });
