@@ -11,7 +11,11 @@ const server = createTestHarness({
   ],
 });
 
-before(async () => { await server.listen(); });
+before(async () => {
+  await server.listen();
+  await server.getWorker().applyD1Migrations("CENTRAL_DB");
+});
+
 after(async () => { await server.close(); });
 
 for (const path of ["/control/status", "/control/check"]) {
