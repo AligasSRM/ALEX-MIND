@@ -1,3 +1,4 @@
+import { authRoutes } from "./auth.js";
 const B2_ENDPOINT = "https://s3.eu-central-003.backblazeb2.com";
 const B2_BUCKET = "alex-central-vault";
 const B2_REGION = "eu-central-003";
@@ -748,6 +749,9 @@ export default {
     const url = new URL(request.url);
 
     try {
+      const authResponse = await authRoutes(request, env);
+      if (authResponse) return authResponse;
+
       if (url.pathname === "/control/status" && request.method === "GET") {
         return controlStatusResponse(env);
       }
