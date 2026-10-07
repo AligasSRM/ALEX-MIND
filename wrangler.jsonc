@@ -17,6 +17,9 @@
       "id": "cf28837ada8a410f95ef16d863f5ea74"
     }
   ],
+  "assets": {
+    "directory": "./public"
+  },
   "vars": {
     "B2_KEY_ID": "test-key-id"
   }

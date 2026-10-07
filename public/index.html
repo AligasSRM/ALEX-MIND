@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="ALEX-MIND control plane">
+  <title>ALEX-MIND Control</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">ALEX CENTRAL VAULT</p>
+        <h1>ALEX-MIND <span>Control</span></h1>
+      </div>
+      <button id="refresh" class="refresh" type="button">Refresh</button>
+    </header>
+
+    <section id="banner" class="banner loading" aria-live="polite">
+      <span class="dot"></span><span id="bannerText">Checking control plane…</span>
+    </section>
+
+    <section class="grid">
+      <article class="card hero">
+        <div class="card-head"><h2>Control plane</h2><span id="planeBadge" class="badge">CHECKING</span></div>
+        <div class="metric" id="overall">—</div>
+        <p id="checked">Waiting for live status</p>
+      </article>
+
+      <article class="card">
+        <div class="card-head"><h2>Core</h2></div>
+        <ul class="checks">
+          <li><span>D1 Database</span><strong id="d1">—</strong></li>
+          <li><span>KV State</span><strong id="kv">—</strong></li>
+          <li><span>B2 Storage</span><strong id="b2">—</strong></li>
+        </ul>
+      </article>
+
+      <article class="card sources-card">
+        <div class="card-head"><h2>Sources</h2><span id="sourceCount">—</span></div>
+        <div id="sources" class="sources"><p class="muted">Loading…</p></div>
+      </article>
+    </section>
+
+    <footer>
+      <span>Live production API</span>
+      <a href="/control/status" target="_blank" rel="noreferrer">/control/status</a>
+    </footer>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
