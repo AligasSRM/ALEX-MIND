@@ -50,6 +50,14 @@ function errorText(error) {
   return String(error?.message || error);
 }
 
+async function controlActionAuthorized(request, env) {
+  if (!env.CONTROL_ACTION_KEY) return null;
+  const provided = request.headers.get("x-alex-control-key") || "";
+  const expected = await sha256Hex(env.CONTROL_ACTION_KEY);
+  const received = await sha256Hex(provided);
+  return expected === received;
+}
+
 async function b2Request(env, method, key, body = new Uint8Array(), contentType) {
   if (!env.B2_KEY_ID || !env.B2_APP_KEY) {
     throw new Error("B2 secrets not configured");
