@@ -59,7 +59,7 @@ async function controlActionAuthorized(request, env) {
   return expected === received;
 }
 
-async function b2Request(env, method, key, body = new Uint8Array(), contentType) {
+async function b2Request(env, method, key, body = new Uint8Array(), contentType, query = "") {
   if (!env.B2_KEY_ID || !env.B2_APP_KEY) {
     throw new Error("B2 secrets not configured");
   }
@@ -87,7 +87,7 @@ async function b2Request(env, method, key, body = new Uint8Array(), contentType)
   const canonicalRequest = [
     method,
     path,
-    "",
+    query,
     canonicalHeaders,
     signedHeaders,
     payloadHash,
@@ -110,11 +110,93 @@ async function b2Request(env, method, key, body = new Uint8Array(), contentType)
     ", SignedHeaders=" + signedHeaders +
     ", Signature=" + await hmacHex(kSigning, stringToSign);
 
-  return fetch(B2_ENDPOINT + path, {
+  return fetch(B2_ENDPOINT + path + (query ? "?" + query : ""), {
     method,
     headers,
     body: bytes.length ? bytes : undefined,
   });
+}
+
+function xmlTagValue(xml, tag) {
+  const match = xml.match(new RegExp("<" + tag + ">([\\s\\S]*?)</" + tag + ">"));
+  if (!match) return null;
+  return match[1]
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+async function purgeB2ObjectVersions(env, key) {
+  const versions = [];
+  let keyMarker = null;
+  let versionIdMarker = null;
+  let pages = 0;
+
+  // Collect first, then delete. If listing is incomplete, fail closed before
+  // deleting anything; a bounded page count prevents unbounded work.
+  while (pages < 100) {
+    const params = [
+      ["max-keys", "1000"],
+      ["prefix", key],
+      ["versions", ""],
+    ];
+    if (keyMarker) params.push(["key-marker", keyMarker]);
+    if (versionIdMarker) params.push(["version-id-marker", versionIdMarker]);
+    params.sort(([a], [b]) => a.localeCompare(b));
+    const query = params
+      .map(([name, value]) => awsEncode(name) + "=" + awsEncode(value))
+      .join("&");
+
+    const response = await b2Request(env, "GET", "", new Uint8Array(), undefined, query);
+    if (!response.ok) throw new Error("B2_VERSION_LIST_FAILED:" + response.status);
+    const xml = await response.text();
+
+    for (const match of xml.matchAll(/<(Version|DeleteMarker)>([\s\S]*?)<\/\1>/g)) {
+      const entryType = match[1];
+      const entry = match[2];
+      const entryKey = xmlTagValue(entry, "Key");
+      const versionId = xmlTagValue(entry, "VersionId");
+      if (entryKey !== key || !versionId) continue;
+      versions.push({
+        versionId,
+        sizeBytes: entryType === "Version" ? Number(xmlTagValue(entry, "Size") || 0) : 0,
+      });
+      if (versions.length > 10000) {
+        throw new Error("B2_VERSION_LIMIT_EXCEEDED");
+      }
+    }
+
+    const truncated = xmlTagValue(xml, "IsTruncated") === "true";
+    if (!truncated) break;
+    keyMarker = xmlTagValue(xml, "NextKeyMarker");
+    versionIdMarker = xmlTagValue(xml, "NextVersionIdMarker");
+    if (!keyMarker || !versionIdMarker) {
+      throw new Error("B2_VERSION_PAGINATION_INVALID");
+    }
+    pages += 1;
+  }
+
+  if (pages >= 100) throw new Error("B2_VERSION_PAGE_LIMIT_EXCEEDED");
+
+  let bytesDeleted = 0;
+  let versionsDeleted = 0;
+  for (const version of versions) {
+    const deleteQuery = "versionId=" + awsEncode(version.versionId);
+    const response = await b2Request(
+      env, "DELETE", key, new Uint8Array(), undefined, deleteQuery,
+    );
+    if (!response.ok && response.status !== 404) {
+      throw new Error("B2_VERSION_DELETE_FAILED:" + response.status);
+    }
+    if (response.ok) {
+      bytesDeleted += version.sizeBytes;
+      versionsDeleted += 1;
+    }
+  }
+
+  return { bytesDeleted, versionsDeleted, versionsFound: versions.length };
 }
 
 async function objectSchema(env) {
@@ -867,6 +949,100 @@ export default {
         }));
       }
 
+      const trashMatch = url.pathname.match(/^\/objects\/([^/]+)\/(trash|restore|purge)$/);
+      if (trashMatch && request.method === "POST") {
+        const authorized = await controlActionAuthorized(request, env);
+        if (authorized === null) return Response.json({ ok: false, status: "FAILED", error: "control action authorization not configured" }, { status: 503 });
+        if (!authorized) return Response.json({ ok: false, status: "DENIED", error: "control action unauthorized" }, { status: 403 });
+        const objectId = decodeURIComponent(trashMatch[1]);
+        const action = trashMatch[2];
+        const object = await env.CENTRAL_DB.prepare(
+          "SELECT object_id,storage_provider,storage_bucket,storage_key,status,size_bytes,trashed_at,archived_at FROM objects WHERE object_id=? LIMIT 1"
+        ).bind(objectId).first();
+        if (!object) return Response.json({ ok: false, status: "FAILED", error: "object not found" }, { status: 404 });
+
+        if (action === "trash") {
+          if (object.status !== "stored" && object.status !== "archived") {
+            return Response.json({ ok: false, status: "BLOCKED", error: "only stored or archived objects can be trashed", current_status: object.status }, { status: 409 });
+          }
+          const trashed = await env.CENTRAL_DB.prepare(
+            "UPDATE objects SET status='trashed',trashed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status IN ('stored','archived')"
+          ).bind(objectId).run();
+          if ((trashed.meta?.changes || 0) !== 1) {
+            return Response.json({ ok: false, status: "BLOCKED", error: "object state changed before trash could complete" }, { status: 409 });
+          }
+          return Response.json({ ok: true, status: "GREEN", action, object_id: objectId, bytes_deleted: 0, storage_delete_performed: false });
+        }
+
+        if (action === "restore") {
+          if (object.status !== "trashed") return Response.json({ ok: false, status: "BLOCKED", error: "object is not in trash", current_status: object.status }, { status: 409 });
+          const restoredStatus = object.archived_at ? "archived" : "stored";
+          const restored = await env.CENTRAL_DB.prepare(
+            "UPDATE objects SET status=?,trashed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status='trashed'"
+          ).bind(restoredStatus, objectId).run();
+          if ((restored.meta?.changes || 0) !== 1) {
+            return Response.json({ ok: false, status: "BLOCKED", error: "object state changed before restore could complete" }, { status: 409 });
+          }
+          return Response.json({ ok: true, status: "GREEN", action, object_id: objectId, restored: true, restored_status: restoredStatus });
+        }
+
+        if (object.status !== "trashed") return Response.json({ ok: false, status: "BLOCKED", error: "permanent deletion requires an object in trash", current_status: object.status }, { status: 409 });
+        if (object.storage_provider !== "backblaze-b2" || object.storage_bucket !== B2_BUCKET || !object.storage_key) {
+          return Response.json({ ok: false, status: "BLOCKED", error: "storage provider/key mismatch; refusing permanent deletion" }, { status: 409 });
+        }
+        const started = await env.CENTRAL_DB.prepare(
+          "UPDATE objects SET status='purging',updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status='trashed'"
+        ).bind(objectId).run();
+        if ((started.meta?.changes || 0) !== 1) {
+          return Response.json({
+            ok: false,
+            status: "BLOCKED",
+            error: "object state changed before purge could start",
+          }, { status: 409 });
+        }
+
+        let purgeResult;
+        try {
+          purgeResult = await purgeB2ObjectVersions(env, object.storage_key);
+        } catch (error) {
+          console.error("ALEX_MIND_B2_PURGE_FAILED", errorText(error));
+          await env.CENTRAL_DB.prepare(
+            "UPDATE objects SET status='trashed',updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status='purging'"
+          ).bind(objectId).run();
+          return Response.json({
+            ok: false,
+            status: "FAILED",
+            error: "B2_PURGE_FAILED",
+            storage_delete_state: "unknown",
+            verify_before_retry: true,
+          }, { status: 502 });
+        }
+        const update = await env.CENTRAL_DB.prepare(
+          "UPDATE objects SET status='deleted',updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status='purging'"
+        ).bind(objectId).run();
+        if ((update.meta?.changes || 0) !== 1) {
+          return Response.json({
+            ok: false,
+            status: "FAILED",
+            error: "storage purge completed but index finalization needs reconciliation",
+            storage_delete_state: "completed",
+            bytes_deleted: purgeResult.bytesDeleted,
+            needs_reconciliation: true,
+          }, { status: 500 });
+        }
+        return Response.json({
+          ok: true,
+          status: "GREEN",
+          action,
+          object_id: objectId,
+          bytes_deleted: purgeResult.bytesDeleted,
+          versions_deleted: purgeResult.versionsDeleted,
+          versions_found: purgeResult.versionsFound,
+          storage_delete_performed: purgeResult.versionsDeleted > 0,
+          physical_bytes_freed_confirmed: purgeResult.versionsFound > 0 && purgeResult.versionsDeleted === purgeResult.versionsFound,
+        });
+      }
+
       if (url.pathname === "/objects/groom" && request.method === "POST") {
         return Response.json(await groomObjects(
           env,
@@ -907,3 +1083,5 @@ export default {
     }
   },
 };
+
+export { purgeB2ObjectVersions };
