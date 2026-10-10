@@ -153,7 +153,7 @@ async function purgeB2ObjectVersions(env, key) {
     if (!response.ok) throw new Error("B2_VERSION_LIST_FAILED:" + response.status);
     const xml = await response.text();
 
-    for (const match of xml.matchAll(/<(Version|DeleteMarker)>([\\s\\S]*?)<\\/\\1>/g)) {
+    for (const match of xml.matchAll(/<(Version|DeleteMarker)>([\s\S]*?)<\/\1>/g)) {
       const entryType = match[1];
       const entry = match[2];
       const entryKey = xmlTagValue(entry, "Key");
@@ -1016,7 +1016,7 @@ export default {
           versions_deleted: purgeResult.versionsDeleted,
           versions_found: purgeResult.versionsFound,
           storage_delete_performed: purgeResult.versionsDeleted > 0,
-          physical_bytes_freed_confirmed: true,
+          physical_bytes_freed_confirmed: purgeResult.versionsFound > 0 && purgeResult.versionsDeleted === purgeResult.versionsFound,
         });
       }
 
