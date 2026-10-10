@@ -284,6 +284,97 @@ test("ALEX-MIND vault object can be trashed and restored without deleting stored
   assert.equal(afterRestore.trashed_at, null);
 });
 
+test("ALEX-MIND restoring an archived object preserves its archived state", async () => {
+  const worker = server.getWorker();
+  const env = await worker.getEnv();
+  const archivedAt = new Date(Date.now() - 60_000).toISOString();
+  await env.CENTRAL_DB.prepare(
+    "INSERT INTO objects (object_id,source_id,vault_id,storage_provider,storage_bucket,storage_key,status,name,kind,mime_type,size_bytes,checksum,checksum_algorithm,created_at,updated_at,stored_at,archived_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+  ).bind(
+    "archived-trash-restore-test", 1, "alex-central-vault", "backblaze-b2",
+    "alex-central-vault", "objects/test/archived-trash-restore-test", "archived",
+    "archived trash restore test", "test", "text/plain", 12, "test-checksum",
+    "SHA-256", archivedAt, archivedAt, archivedAt, archivedAt
+  ).run();
+
+  const headers = { "x-alex-control-key": "test-control-key" };
+  const trashed = await server.fetch(
+    "https://alex-mind.test/objects/archived-trash-restore-test/trash",
+    { method: "POST", headers }
+  );
+  assert.equal(trashed.status, 200, await trashed.clone().text());
+
+  const restored = await server.fetch(
+    "https://alex-mind.test/objects/archived-trash-restore-test/restore",
+    { method: "POST", headers }
+  );
+  assert.equal(restored.status, 200, await restored.clone().text());
+  const body = await restored.json();
+  assert.equal(body.restored_status, "archived");
+
+  const row = await env.CENTRAL_DB.prepare(
+    "SELECT status,archived_at,trashed_at FROM objects WHERE object_id=?"
+  ).bind("archived-trash-restore-test").first();
+  assert.equal(row.status, "archived");
+  assert.equal(row.archived_at, archivedAt);
+  assert.equal(row.trashed_at, null);
+});
+
+
+test("ALEX-MIND successful permanent purge retains the non-null storage key as an audit tombstone", async () => {
+  const worker = server.getWorker();
+  const env = await worker.getEnv();
+  await env.CENTRAL_DB.prepare(
+    "INSERT INTO objects (object_id,source_id,vault_id,storage_provider,storage_bucket,storage_key,status,name,kind,mime_type,size_bytes,checksum,checksum_algorithm,created_at,updated_at,stored_at,trashed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+  ).bind(
+    "purge-route-test", 1, "alex-central-vault", "backblaze-b2",
+    "alex-central-vault", "objects/test/purge-route-test", "trashed",
+    "purge route test", "test", "text/plain", 12, "test-checksum",
+    "SHA-256", new Date().toISOString(), new Date().toISOString(),
+    new Date().toISOString(), new Date().toISOString()
+  ).run();
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    const method = init.method || "GET";
+    if (method === "GET" && url.searchParams.has("versions")) {
+      return new Response(
+        "<ListVersionsResult><IsTruncated>false</IsTruncated>" +
+        "<Version><Key>objects/test/purge-route-test</Key><VersionId>purge-version-1</VersionId><Size>12</Size></Version>" +
+        "</ListVersionsResult>",
+        { status: 200 },
+      );
+    }
+    if (method === "DELETE" && url.searchParams.has("versionId")) {
+      return new Response(null, { status: 204 });
+    }
+    return new Response("unexpected mocked request", { status: 500 });
+  };
+
+  try {
+    const response = await server.fetch(
+      "https://alex-mind.test/objects/purge-route-test/purge",
+      { method: "POST", headers: { "x-alex-control-key": "test-control-key" } }
+    );
+    const raw = await response.text();
+    assert.equal(response.status, 200, raw);
+    const body = JSON.parse(raw);
+    assert.equal(body.status, "GREEN");
+    assert.equal(body.versions_deleted, 1);
+    assert.equal(body.bytes_deleted, 12);
+
+    const row = await env.CENTRAL_DB.prepare(
+      "SELECT status,storage_key FROM objects WHERE object_id=?"
+    ).bind("purge-route-test").first();
+    assert.equal(row.status, "deleted");
+    assert.equal(row.storage_key, "objects/test/purge-route-test");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
 test("ALEX-MIND permanent purge refuses a mismatched storage provider before deletion", async () => {
   const worker = server.getWorker();
   const env = await worker.getEnv();
