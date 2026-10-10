@@ -867,6 +867,50 @@ export default {
         }));
       }
 
+      const trashMatch = url.pathname.match(/^\\/objects\\/([^/]+)\\/(trash|restore|purge)$/);
+      if (trashMatch && request.method === "POST") {
+        const authorized = await controlActionAuthorized(request, env);
+        if (authorized === null) return Response.json({ ok: false, status: "FAILED", error: "control action authorization not configured" }, { status: 503 });
+        if (!authorized) return Response.json({ ok: false, status: "DENIED", error: "control action unauthorized" }, { status: 403 });
+        const objectId = decodeURIComponent(trashMatch[1]);
+        const action = trashMatch[2];
+        const object = await env.CENTRAL_DB.prepare(
+          "SELECT object_id,storage_provider,storage_bucket,storage_key,status,size_bytes,trashed_at FROM objects WHERE object_id=? LIMIT 1"
+        ).bind(objectId).first();
+        if (!object) return Response.json({ ok: false, status: "FAILED", error: "object not found" }, { status: 404 });
+
+        if (action === "trash") {
+          if (object.status !== "stored" && object.status !== "archived") {
+            return Response.json({ ok: false, status: "BLOCKED", error: "only stored or archived objects can be trashed", current_status: object.status }, { status: 409 });
+          }
+          await env.CENTRAL_DB.prepare(
+            "UPDATE objects SET status='trashed',trashed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status IN ('stored','archived')"
+          ).bind(objectId).run();
+          return Response.json({ ok: true, status: "GREEN", action, object_id: objectId, bytes_deleted: 0, storage_delete_performed: false });
+        }
+
+        if (action === "restore") {
+          if (object.status !== "trashed") return Response.json({ ok: false, status: "BLOCKED", error: "object is not in trash", current_status: object.status }, { status: 409 });
+          await env.CENTRAL_DB.prepare(
+            "UPDATE objects SET status='stored',trashed_at=NULL,archived_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status='trashed'"
+          ).bind(objectId).run();
+          return Response.json({ ok: true, status: "GREEN", action, object_id: objectId, restored: true });
+        }
+
+        if (object.status !== "trashed") return Response.json({ ok: false, status: "BLOCKED", error: "permanent deletion requires an object in trash", current_status: object.status }, { status: 409 });
+        if (object.storage_provider !== "backblaze-b2" || object.storage_bucket !== B2_BUCKET || !object.storage_key) {
+          return Response.json({ ok: false, status: "BLOCKED", error: "storage provider/key mismatch; refusing permanent deletion" }, { status: 409 });
+        }
+        const deleted = await b2Request(env, "DELETE", object.storage_key);
+        if (!deleted.ok && deleted.status !== 404) {
+          return Response.json({ ok: false, status: "FAILED", error: "B2_DELETE_FAILED:" + deleted.status, storage_delete_performed: false }, { status: 502 });
+        }
+        await env.CENTRAL_DB.prepare(
+          "UPDATE objects SET status='deleted',storage_key=NULL,updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status='trashed'"
+        ).bind(objectId).run();
+        return Response.json({ ok: true, status: "GREEN", action, object_id: objectId, bytes_deleted: object.size_bytes || 0, storage_delete_performed: true });
+      }
+
       if (url.pathname === "/objects/groom" && request.method === "POST") {
         return Response.json(await groomObjects(
           env,
