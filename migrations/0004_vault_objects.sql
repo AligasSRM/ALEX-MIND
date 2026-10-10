@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS objects (
   updated_at TEXT NOT NULL,
   stored_at TEXT NOT NULL,
   archived_at TEXT,
+  trashed_at TEXT,
   FOREIGN KEY(source_id) REFERENCES sources(id)
 );
 
