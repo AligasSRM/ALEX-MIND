@@ -965,18 +965,25 @@ export default {
           if (object.status !== "stored" && object.status !== "archived") {
             return Response.json({ ok: false, status: "BLOCKED", error: "only stored or archived objects can be trashed", current_status: object.status }, { status: 409 });
           }
-          await env.CENTRAL_DB.prepare(
+          const trashed = await env.CENTRAL_DB.prepare(
             "UPDATE objects SET status='trashed',trashed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status IN ('stored','archived')"
           ).bind(objectId).run();
+          if ((trashed.meta?.changes || 0) !== 1) {
+            return Response.json({ ok: false, status: "BLOCKED", error: "object state changed before trash could complete" }, { status: 409 });
+          }
           return Response.json({ ok: true, status: "GREEN", action, object_id: objectId, bytes_deleted: 0, storage_delete_performed: false });
         }
 
         if (action === "restore") {
           if (object.status !== "trashed") return Response.json({ ok: false, status: "BLOCKED", error: "object is not in trash", current_status: object.status }, { status: 409 });
-          await env.CENTRAL_DB.prepare(
-            "UPDATE objects SET status='stored',trashed_at=NULL,archived_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status='trashed'"
-          ).bind(objectId).run();
-          return Response.json({ ok: true, status: "GREEN", action, object_id: objectId, restored: true });
+          const restoredStatus = object.archived_at ? "archived" : "stored";
+          const restored = await env.CENTRAL_DB.prepare(
+            "UPDATE objects SET status=?,trashed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status='trashed'"
+          ).bind(restoredStatus, objectId).run();
+          if ((restored.meta?.changes || 0) !== 1) {
+            return Response.json({ ok: false, status: "BLOCKED", error: "object state changed before restore could complete" }, { status: 409 });
+          }
+          return Response.json({ ok: true, status: "GREEN", action, object_id: objectId, restored: true, restored_status: restoredStatus });
         }
 
         if (object.status !== "trashed") return Response.json({ ok: false, status: "BLOCKED", error: "permanent deletion requires an object in trash", current_status: object.status }, { status: 409 });
@@ -1011,7 +1018,7 @@ export default {
           }, { status: 502 });
         }
         const update = await env.CENTRAL_DB.prepare(
-          "UPDATE objects SET status='deleted',storage_key=NULL,updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status='purging'"
+          "UPDATE objects SET status='deleted',updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status='purging'"
         ).bind(objectId).run();
         if ((update.meta?.changes || 0) !== 1) {
           return Response.json({
