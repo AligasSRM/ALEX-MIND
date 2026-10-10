@@ -957,7 +957,7 @@ export default {
         const objectId = decodeURIComponent(trashMatch[1]);
         const action = trashMatch[2];
         const object = await env.CENTRAL_DB.prepare(
-          "SELECT object_id,storage_provider,storage_bucket,storage_key,status,size_bytes,trashed_at FROM objects WHERE object_id=? LIMIT 1"
+          "SELECT object_id,storage_provider,storage_bucket,storage_key,status,size_bytes,trashed_at,archived_at FROM objects WHERE object_id=? LIMIT 1"
         ).bind(objectId).first();
         if (!object) return Response.json({ ok: false, status: "FAILED", error: "object not found" }, { status: 404 });
 
