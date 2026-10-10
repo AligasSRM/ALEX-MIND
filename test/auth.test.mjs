@@ -93,6 +93,7 @@ test("Phase 26 logout revokes the server-side session", async () => {
       "content-type": "application/json",
       "origin": "https://alex-mind.test",
       "cookie": csrfCookie,
+      "x-csrf-token": csrfBody.csrf_token,
     },
     body: JSON.stringify({ email, password }),
   });
