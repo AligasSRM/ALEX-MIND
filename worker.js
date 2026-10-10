@@ -818,6 +818,9 @@ export default {
       }
 
       if (url.pathname === "/control/operations" && request.method === "GET") {
+        const authorized = await controlActionAuthorized(request, env);
+        if (authorized === null) return Response.json({ ok: false, status: "FAILED", error: "control action authorization not configured" }, { status: 503 });
+        if (!authorized) return Response.json({ ok: false, status: "DENIED", error: "control action unauthorized" }, { status: 403 });
         const operationId = url.searchParams.get("operation_id");
         if (operationId) {
           const operation = await getControlOperation(env, operationId);
@@ -856,6 +859,9 @@ export default {
       }
 
       if (url.pathname === "/objects/test" && request.method === "GET") {
+        const authorized = await controlActionAuthorized(request, env);
+        if (authorized === null) return Response.json({ ok: false, status: "FAILED", error: "control action authorization not configured" }, { status: 503 });
+        if (!authorized) return Response.json({ ok: false, status: "DENIED", error: "control action unauthorized" }, { status: 403 });
         return Response.json(await storeObject(env, {
           sourceName: "GitHub",
           vaultId: B2_BUCKET,
@@ -868,6 +874,9 @@ export default {
       }
 
       if (url.pathname === "/objects/groom" && request.method === "POST") {
+        const authorized = await controlActionAuthorized(request, env);
+        if (authorized === null) return Response.json({ ok: false, status: "FAILED", error: "control action authorization not configured" }, { status: 503 });
+        if (!authorized) return Response.json({ ok: false, status: "DENIED", error: "control action unauthorized" }, { status: 403 });
         return Response.json(await groomObjects(
           env,
           url.searchParams.get("dry_run") === "true",
@@ -875,6 +884,9 @@ export default {
       }
 
       if (url.pathname === "/objects" && request.method === "POST") {
+        const authorized = await controlActionAuthorized(request, env);
+        if (authorized === null) return Response.json({ ok: false, status: "FAILED", error: "control action authorization not configured" }, { status: 503 });
+        if (!authorized) return Response.json({ ok: false, status: "DENIED", error: "control action unauthorized" }, { status: 403 });
         const input = {
           sourceName: String(request.headers.get("x-source-name") || "").trim(),
           vaultId: String(request.headers.get("x-vault-id") || "").trim(),
