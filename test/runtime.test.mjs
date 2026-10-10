@@ -211,3 +211,30 @@ test("ALEX-MIND reconciliation endpoint stays fail-closed when no reconciliation
   assert.equal(reconcile.status, 409);
   assert.equal(body.status, "BLOCKED");
 });
+
+
+for (const action of ["trash", "restore", "purge"]) {
+  test("ALEX-MIND object " + action + " requires control authorization", async () => {
+    const response = await server.fetch(
+      "https://alex-mind.test/objects/nonexistent-object/" + action,
+      { method: "POST" },
+    );
+    assert.equal(response.status, 403);
+    const body = JSON.parse(await response.text());
+    assert.equal(body.status, "DENIED");
+    assert.equal(body.error, "control action unauthorized");
+  });
+}
+
+test("ALEX-MIND object trash lifecycle refuses unknown objects after authorization", async () => {
+  const response = await server.fetch(
+    "https://alex-mind.test/objects/nonexistent-object/trash",
+    {
+      method: "POST",
+      headers: { "x-alex-control-key": "test-control-key" },
+    },
+  );
+  assert.equal(response.status, 404);
+  const body = JSON.parse(await response.text());
+  assert.equal(body.error, "object not found");
+});
