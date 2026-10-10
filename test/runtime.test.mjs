@@ -176,6 +176,7 @@ test("ALEX-MIND control operation can be read with its audit events", async () =
 
   const read = await server.fetch(
     "https://alex-mind.test/control/operations?operation_id=" + encodeURIComponent(operationId),
+    { headers: { "x-alex-control-key": "test-control-key" } },
   );
   const body = JSON.parse(await read.text());
   assert.equal(read.status, 200);
@@ -210,4 +211,22 @@ test("ALEX-MIND reconciliation endpoint stays fail-closed when no reconciliation
   const body = JSON.parse(await reconcile.text());
   assert.equal(reconcile.status, 409);
   assert.equal(body.status, "BLOCKED");
+});
+
+
+test("ALEX-MIND control operation reads require authorization", async () => {
+  const response = await server.fetch("https://alex-mind.test/control/operations");
+  assert.equal(response.status, 403);
+  const body = await response.json();
+  assert.equal(body.status, "DENIED");
+});
+
+test("ALEX-MIND storage mutation/test routes require authorization before touching storage", async () => {
+  const requests = [
+    server.fetch("https://alex-mind.test/objects/test"),
+    server.fetch("https://alex-mind.test/objects/groom", { method: "POST" }),
+    server.fetch("https://alex-mind.test/objects", { method: "POST", headers: { "x-source-name": "GitHub", "x-vault-id": "alex-central-vault" }, body: "must not be stored" }),
+  ];
+  const responses = await Promise.all(requests);
+  assert.deepEqual(responses.map((response) => response.status), [403, 403, 403]);
 });

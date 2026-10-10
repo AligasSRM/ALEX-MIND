@@ -64,6 +64,7 @@ test("Phase 26 login creates a server-side session and /me resolves the user", a
       "content-type": "application/json",
       "origin": "https://alex-mind.test",
       "cookie": csrfCookie,
+      "x-csrf-token": csrfBody.csrf_token,
     },
     body: JSON.stringify({ email, password }),
   });
@@ -92,6 +93,7 @@ test("Phase 26 logout revokes the server-side session", async () => {
       "content-type": "application/json",
       "origin": "https://alex-mind.test",
       "cookie": csrfCookie,
+      "x-csrf-token": csrfBody.csrf_token,
     },
     body: JSON.stringify({ email, password }),
   });
