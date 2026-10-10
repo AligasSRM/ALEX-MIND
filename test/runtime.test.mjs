@@ -238,3 +238,76 @@ test("ALEX-MIND object trash lifecycle refuses unknown objects after authorizati
   const body = JSON.parse(await response.text());
   assert.equal(body.error, "object not found");
 });
+
+
+test("ALEX-MIND vault object can be trashed and restored without deleting stored bytes", async () => {
+  const worker = server.getWorker();
+  const env = await worker.getEnv();
+  await env.CENTRAL_DB.prepare(
+    "INSERT INTO objects (object_id,source_id,vault_id,storage_provider,storage_bucket,storage_key,status,name,kind,mime_type,size_bytes,checksum,checksum_algorithm,created_at,updated_at,stored_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+  ).bind(
+    "trash-restore-test", 1, "alex-central-vault", "backblaze-b2",
+    "alex-central-vault", "objects/test/trash-restore-test", "stored",
+    "trash restore test", "test", "text/plain", 12, "test-checksum",
+    "SHA-256", new Date().toISOString(), new Date().toISOString(), new Date().toISOString()
+  ).run();
+
+  const headers = { "x-alex-control-key": "test-control-key" };
+  const trashed = await server.fetch(
+    "https://alex-mind.test/objects/trash-restore-test/trash",
+    { method: "POST", headers }
+  );
+  assert.equal(trashed.status, 200, await trashed.clone().text());
+  const trashBody = await trashed.json();
+  assert.equal(trashBody.action, "trash");
+  assert.equal(trashBody.bytes_deleted, 0);
+  assert.equal(trashBody.storage_delete_performed, false);
+
+  const afterTrash = await env.CENTRAL_DB.prepare(
+    "SELECT status,storage_key,trashed_at FROM objects WHERE object_id=?"
+  ).bind("trash-restore-test").first();
+  assert.equal(afterTrash.status, "trashed");
+  assert.equal(afterTrash.storage_key, "objects/test/trash-restore-test");
+  assert.ok(afterTrash.trashed_at);
+
+  const restored = await server.fetch(
+    "https://alex-mind.test/objects/trash-restore-test/restore",
+    { method: "POST", headers }
+  );
+  assert.equal(restored.status, 200, await restored.clone().text());
+  const afterRestore = await env.CENTRAL_DB.prepare(
+    "SELECT status,storage_key,trashed_at FROM objects WHERE object_id=?"
+  ).bind("trash-restore-test").first();
+  assert.equal(afterRestore.status, "stored");
+  assert.equal(afterRestore.storage_key, "objects/test/trash-restore-test");
+  assert.equal(afterRestore.trashed_at, null);
+});
+
+test("ALEX-MIND permanent purge refuses a mismatched storage provider before deletion", async () => {
+  const worker = server.getWorker();
+  const env = await worker.getEnv();
+  await env.CENTRAL_DB.prepare(
+    "INSERT INTO objects (object_id,source_id,vault_id,storage_provider,storage_bucket,storage_key,status,name,kind,mime_type,size_bytes,checksum,checksum_algorithm,created_at,updated_at,stored_at,trashed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+  ).bind(
+    "purge-guard-test", 1, "alex-central-vault", "unexpected-provider",
+    "alex-central-vault", "objects/test/purge-guard-test", "trashed",
+    "purge guard test", "test", "text/plain", 5, "test-checksum",
+    "SHA-256", new Date().toISOString(), new Date().toISOString(),
+    new Date().toISOString(), new Date().toISOString()
+  ).run();
+
+  const response = await server.fetch(
+    "https://alex-mind.test/objects/purge-guard-test/purge",
+    { method: "POST", headers: { "x-alex-control-key": "test-control-key" } }
+  );
+  assert.equal(response.status, 409, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.status, "BLOCKED");
+  assert.match(body.error, /storage provider\/key mismatch/);
+
+  const stillPresent = await env.CENTRAL_DB.prepare(
+    "SELECT status,storage_key FROM objects WHERE object_id=?"
+  ).bind("purge-guard-test").first();
+  assert.equal(stillPresent.status, "trashed");
+  assert.equal(stillPresent.storage_key, "objects/test/purge-guard-test");
+});
