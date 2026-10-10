@@ -2,6 +2,15 @@
 
 ## Resume point — 2026-10-10
 
+### New requirement recorded — Storage Trash and Capacity Management
+- User requested a Trash area inside ALEX-MIND's own vault/storage, not a separate Dropbox/ChatGPT trash.
+- Added design specification: `storage/8.6-trash-and-capacity-management.md`.
+- Added backlog item: `IDEA-20261010-01` in `docs/operations/ideas.md`.
+- Required behavior: soft-delete first, restore within retention, explicit/expired purge, capacity warnings, safe cleanup limited to expired Trash and regenerable temporary/cache data.
+- **No production objects were deleted, moved, or purged.**
+- **Feature status: YELLOW (specification recorded); runtime/UI and automated cleanup are RED (not implemented/tested).**
+- Next: inspect `worker.js`, object lifecycle docs, B2 adapter, current schema/migrations and tests; then implement on an isolated branch and validate against disposable storage before any production deployment.
+
 ### Goal
 Build ALEX-MIND into a reliable central workspace for project notifications and authorized email integrations, accessible from the user's computer and phone.
 
