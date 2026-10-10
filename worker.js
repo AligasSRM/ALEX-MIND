@@ -983,29 +983,45 @@ export default {
         if (object.storage_provider !== "backblaze-b2" || object.storage_bucket !== B2_BUCKET || !object.storage_key) {
           return Response.json({ ok: false, status: "BLOCKED", error: "storage provider/key mismatch; refusing permanent deletion" }, { status: 409 });
         }
+        const started = await env.CENTRAL_DB.prepare(
+          "UPDATE objects SET status='purging',updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status='trashed'"
+        ).bind(objectId).run();
+        if ((started.meta?.changes || 0) !== 1) {
+          return Response.json({
+            ok: false,
+            status: "BLOCKED",
+            error: "object state changed before purge could start",
+          }, { status: 409 });
+        }
+
         let purgeResult;
         try {
           purgeResult = await purgeB2ObjectVersions(env, object.storage_key);
         } catch (error) {
           console.error("ALEX_MIND_B2_PURGE_FAILED", errorText(error));
+          await env.CENTRAL_DB.prepare(
+            "UPDATE objects SET status='trashed',updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status='purging'"
+          ).bind(objectId).run();
           return Response.json({
             ok: false,
             status: "FAILED",
             error: "B2_PURGE_FAILED",
-            storage_delete_performed: false,
+            storage_delete_state: "unknown",
+            verify_before_retry: true,
           }, { status: 502 });
         }
         const update = await env.CENTRAL_DB.prepare(
-          "UPDATE objects SET status='deleted',storage_key=NULL,updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status='trashed'"
+          "UPDATE objects SET status='deleted',storage_key=NULL,updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status='purging'"
         ).bind(objectId).run();
         if ((update.meta?.changes || 0) !== 1) {
           return Response.json({
             ok: false,
             status: "FAILED",
-            error: "object state changed during purge; verify storage before retrying",
-            storage_delete_performed: true,
+            error: "storage purge completed but index finalization needs reconciliation",
+            storage_delete_state: "completed",
             bytes_deleted: purgeResult.bytesDeleted,
-          }, { status: 409 });
+            needs_reconciliation: true,
+          }, { status: 500 });
         }
         return Response.json({
           ok: true,
