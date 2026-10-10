@@ -1076,3 +1076,5 @@ export default {
     }
   },
 };
+
+export { purgeB2ObjectVersions };
