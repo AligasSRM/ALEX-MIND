@@ -59,7 +59,7 @@ async function controlActionAuthorized(request, env) {
   return expected === received;
 }
 
-async function b2Request(env, method, key, body = new Uint8Array(), contentType) {
+async function b2Request(env, method, key, body = new Uint8Array(), contentType, query = "") {
   if (!env.B2_KEY_ID || !env.B2_APP_KEY) {
     throw new Error("B2 secrets not configured");
   }
@@ -87,7 +87,7 @@ async function b2Request(env, method, key, body = new Uint8Array(), contentType)
   const canonicalRequest = [
     method,
     path,
-    "",
+    query,
     canonicalHeaders,
     signedHeaders,
     payloadHash,
@@ -110,11 +110,93 @@ async function b2Request(env, method, key, body = new Uint8Array(), contentType)
     ", SignedHeaders=" + signedHeaders +
     ", Signature=" + await hmacHex(kSigning, stringToSign);
 
-  return fetch(B2_ENDPOINT + path, {
+  return fetch(B2_ENDPOINT + path + (query ? "?" + query : ""), {
     method,
     headers,
     body: bytes.length ? bytes : undefined,
   });
+}
+
+function xmlTagValue(xml, tag) {
+  const match = xml.match(new RegExp("<" + tag + ">([\\s\\S]*?)</" + tag + ">"));
+  if (!match) return null;
+  return match[1]
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+async function purgeB2ObjectVersions(env, key) {
+  const versions = [];
+  let keyMarker = null;
+  let versionIdMarker = null;
+  let pages = 0;
+
+  // Collect first, then delete. If listing is incomplete, fail closed before
+  // deleting anything; a bounded page count prevents unbounded work.
+  while (pages < 100) {
+    const params = [
+      ["max-keys", "1000"],
+      ["prefix", key],
+      ["versions", ""],
+    ];
+    if (keyMarker) params.push(["key-marker", keyMarker]);
+    if (versionIdMarker) params.push(["version-id-marker", versionIdMarker]);
+    params.sort(([a], [b]) => a.localeCompare(b));
+    const query = params
+      .map(([name, value]) => awsEncode(name) + "=" + awsEncode(value))
+      .join("&");
+
+    const response = await b2Request(env, "GET", "", new Uint8Array(), undefined, query);
+    if (!response.ok) throw new Error("B2_VERSION_LIST_FAILED:" + response.status);
+    const xml = await response.text();
+
+    for (const match of xml.matchAll(/<(Version|DeleteMarker)>([\\s\\S]*?)<\\/\\1>/g)) {
+      const entryType = match[1];
+      const entry = match[2];
+      const entryKey = xmlTagValue(entry, "Key");
+      const versionId = xmlTagValue(entry, "VersionId");
+      if (entryKey !== key || !versionId) continue;
+      versions.push({
+        versionId,
+        sizeBytes: entryType === "Version" ? Number(xmlTagValue(entry, "Size") || 0) : 0,
+      });
+      if (versions.length > 10000) {
+        throw new Error("B2_VERSION_LIMIT_EXCEEDED");
+      }
+    }
+
+    const truncated = xmlTagValue(xml, "IsTruncated") === "true";
+    if (!truncated) break;
+    keyMarker = xmlTagValue(xml, "NextKeyMarker");
+    versionIdMarker = xmlTagValue(xml, "NextVersionIdMarker");
+    if (!keyMarker || !versionIdMarker) {
+      throw new Error("B2_VERSION_PAGINATION_INVALID");
+    }
+    pages += 1;
+  }
+
+  if (pages >= 100) throw new Error("B2_VERSION_PAGE_LIMIT_EXCEEDED");
+
+  let bytesDeleted = 0;
+  let versionsDeleted = 0;
+  for (const version of versions) {
+    const deleteQuery = "versionId=" + awsEncode(version.versionId);
+    const response = await b2Request(
+      env, "DELETE", key, new Uint8Array(), undefined, deleteQuery,
+    );
+    if (!response.ok && response.status !== 404) {
+      throw new Error("B2_VERSION_DELETE_FAILED:" + response.status);
+    }
+    if (response.ok) {
+      bytesDeleted += version.sizeBytes;
+      versionsDeleted += 1;
+    }
+  }
+
+  return { bytesDeleted, versionsDeleted, versionsFound: versions.length };
 }
 
 async function objectSchema(env) {
@@ -901,21 +983,40 @@ export default {
         if (object.storage_provider !== "backblaze-b2" || object.storage_bucket !== B2_BUCKET || !object.storage_key) {
           return Response.json({ ok: false, status: "BLOCKED", error: "storage provider/key mismatch; refusing permanent deletion" }, { status: 409 });
         }
-        const deleted = await b2Request(env, "DELETE", object.storage_key);
-        if (!deleted.ok && deleted.status !== 404) {
-          return Response.json({ ok: false, status: "FAILED", error: "B2_DELETE_FAILED:" + deleted.status, storage_delete_performed: false }, { status: 502 });
+        let purgeResult;
+        try {
+          purgeResult = await purgeB2ObjectVersions(env, object.storage_key);
+        } catch (error) {
+          console.error("ALEX_MIND_B2_PURGE_FAILED", errorText(error));
+          return Response.json({
+            ok: false,
+            status: "FAILED",
+            error: "B2_PURGE_FAILED",
+            storage_delete_performed: false,
+          }, { status: 502 });
         }
-        await env.CENTRAL_DB.prepare(
+        const update = await env.CENTRAL_DB.prepare(
           "UPDATE objects SET status='deleted',storage_key=NULL,updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status='trashed'"
         ).bind(objectId).run();
+        if ((update.meta?.changes || 0) !== 1) {
+          return Response.json({
+            ok: false,
+            status: "FAILED",
+            error: "object state changed during purge; verify storage before retrying",
+            storage_delete_performed: true,
+            bytes_deleted: purgeResult.bytesDeleted,
+          }, { status: 409 });
+        }
         return Response.json({
           ok: true,
           status: "GREEN",
           action,
           object_id: objectId,
-          bytes_deleted: deleted.ok ? (object.size_bytes || 0) : 0,
-          storage_delete_performed: deleted.ok,
-          storage_object_missing: deleted.status === 404,
+          bytes_deleted: purgeResult.bytesDeleted,
+          versions_deleted: purgeResult.versionsDeleted,
+          versions_found: purgeResult.versionsFound,
+          storage_delete_performed: purgeResult.versionsDeleted > 0,
+          physical_bytes_freed_confirmed: true,
         });
       }
 
