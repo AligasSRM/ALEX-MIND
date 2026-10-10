@@ -908,7 +908,15 @@ export default {
         await env.CENTRAL_DB.prepare(
           "UPDATE objects SET status='deleted',storage_key=NULL,updated_at=CURRENT_TIMESTAMP WHERE object_id=? AND status='trashed'"
         ).bind(objectId).run();
-        return Response.json({ ok: true, status: "GREEN", action, object_id: objectId, bytes_deleted: object.size_bytes || 0, storage_delete_performed: true });
+        return Response.json({
+          ok: true,
+          status: "GREEN",
+          action,
+          object_id: objectId,
+          bytes_deleted: deleted.ok ? (object.size_bytes || 0) : 0,
+          storage_delete_performed: deleted.ok,
+          storage_object_missing: deleted.status === 404,
+        });
       }
 
       if (url.pathname === "/objects/groom" && request.method === "POST") {
