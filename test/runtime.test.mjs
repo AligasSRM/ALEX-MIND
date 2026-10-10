@@ -1,6 +1,7 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createTestHarness } from "wrangler";
+import { purgeB2ObjectVersions } from "../worker.js";
 
 const server = createTestHarness({
   workers: [
@@ -310,4 +311,51 @@ test("ALEX-MIND permanent purge refuses a mismatched storage provider before del
   ).bind("purge-guard-test").first();
   assert.equal(stillPresent.status, "trashed");
   assert.equal(stillPresent.storage_key, "objects/test/purge-guard-test");
+});
+
+
+test("B2 purge deletes exact object versions and delete markers, not prefix siblings", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    const method = init.method || "GET";
+    calls.push({ method, url });
+    if (method === "GET" && url.searchParams.has("versions")) {
+      return new Response(
+        "<ListVersionsResult>" +
+          "<IsTruncated>false</IsTruncated>" +
+          "<Version><Key>objects/test/purge-helper</Key><VersionId>version-1</VersionId><Size>7</Size></Version>" +
+          "<DeleteMarker><Key>objects/test/purge-helper</Key><VersionId>marker-1</VersionId></DeleteMarker>" +
+          "<Version><Key>objects/test/purge-helper-sibling</Key><VersionId>sibling-1</VersionId><Size>100</Size></Version>" +
+        "</ListVersionsResult>",
+        { status: 200 },
+      );
+    }
+    if (method === "DELETE" && url.searchParams.has("versionId")) {
+      return new Response(null, { status: 204 });
+    }
+    return new Response("unexpected mocked request", { status: 500 });
+  };
+
+  try {
+    const result = await purgeB2ObjectVersions(
+      { B2_KEY_ID: "test-key-id", B2_APP_KEY: "test-app-key" },
+      "objects/test/purge-helper",
+    );
+    assert.deepEqual(result, {
+      bytesDeleted: 7,
+      versionsDeleted: 2,
+      versionsFound: 2,
+    });
+    assert.equal(calls.length, 3);
+    assert.equal(calls[0].method, "GET");
+    assert.deepEqual(
+      calls.slice(1).map((call) => call.url.searchParams.get("versionId")).sort(),
+      ["marker-1", "version-1"],
+    );
+    assert.equal(calls.slice(1).every((call) => call.url.pathname.endsWith("/objects/test/purge-helper")), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
