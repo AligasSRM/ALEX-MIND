@@ -867,7 +867,7 @@ export default {
         }));
       }
 
-      const trashMatch = url.pathname.match(/^\\/objects\\/([^/]+)\\/(trash|restore|purge)$/);
+      const trashMatch = url.pathname.match(/^\/objects\/([^/]+)\/(trash|restore|purge)$/);
       if (trashMatch && request.method === "POST") {
         const authorized = await controlActionAuthorized(request, env);
         if (authorized === null) return Response.json({ ok: false, status: "FAILED", error: "control action authorization not configured" }, { status: 503 });
